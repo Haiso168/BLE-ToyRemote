@@ -107,23 +107,60 @@ for rel in kt:
 
 print("\n=== 8. CI 工作流要点 ===")
 wf = read(os.path.join(proj, ".github/workflows/build-apk.yml"))
-check("working-directory: YcmRemote" in wf, "CI 中工作目录为 YcmRemote（与仓库根包含该目录一致）")
+check("PROJECT_DIR" in wf, "CI 自动探测工程目录（不再写死子目录）")
+check("working-directory: $" + "{{ env.PROJECT_DIR }}" in wf, "Gradle 步骤使用 PROJECT_DIR")
 check("assembleDebug" in wf, "执行 assembleDebug")
 check("upload-artifact@v4" in wf, "使用 upload-artifact@v4")
+check("actions/setup-java@v5" in wf, "使用 setup-java@v5（避免弃用警告）")
 check("java-version: '17'" in wf, "使用 JDK 17")
 check("gradle-version: '8.7'" in wf, "使用 Gradle 8.7")
-check("platforms;android-34" in wf, "安装 platforms;android-34")
+check("platforms;android-34" in wf, "会检查/安装 platforms;android-34")
+check("GITHUB_PATH" in wf, "PATH 走 GITHUB_PATH（语义正确）")
 
-print("\n=== 9. 交叉检查：AGP 与 Gradle 版本兼容 ===")
+print("\n=== 9. 交叉检查：AGP / Gradle / Kotlin / Compose 插件版本 ===")
 root_b = read(os.path.join(proj, "build.gradle.kts"))
+app_b = read(os.path.join(proj, "app/build.gradle.kts"))
 agp = re.search(r'com\.android\.application"\)\s*version\s*"([\d.]+)"', root_b)
 kotlin_v = re.search(r'kotlin\.android"\)\s*version\s*"([\d.]+)"', root_b)
+compose_v = re.search(r'kotlin\.plugin\.compose"\)\s*version\s*"([\d.]+)"', root_b)
+
 if agp:
     print(f"        AGP = {agp.group(1)}  (要求 Gradle >= 8.7)")
     check(tuple(int(x) for x in agp.group(1).split(".")) >= (8, 5), "AGP >= 8.5")
     check("gradle-version: '8.7'" in wf, "Gradle 8.7 满足 AGP 8.5.x 的最低要求")
 if kotlin_v:
     print(f"        Kotlin = {kotlin_v.group(1)}")
+
+# Kotlin 2.0 起，启用 Compose 必须应用 Compose Compiler 插件（曾因此构建失败）
+print("        -- Compose 编译器插件 --")
+check(compose_v is not None, "根 build.gradle.kts 声明了 org.jetbrains.kotlin.plugin.compose")
+check('id("org.jetbrains.kotlin.plugin.compose")' in app_b, "app 模块应用了 compose 插件")
+if compose_v and kotlin_v:
+    check(compose_v.group(1) == kotlin_v.group(1),
+          f"compose 插件版本与 Kotlin 一致（{compose_v.group(1)} == {kotlin_v.group(1)}）")
+check("composeOptions" not in app_b and "kotlinCompilerExtensionVersion" not in app_b,
+      "没有残留已废弃的 composeOptions/kotlinCompilerExtensionVersion")
+
+print("\n=== 10. Kotlin 源码 import 完整性抽查 ===")
+SRC = os.path.join(proj, "app", "src", "main", "java")
+need_import = [
+    ("rememberSaveable", "androidx.compose.runtime.saveable.rememberSaveable"),
+    ("FlowRow", "androidx.compose.foundation.layout.FlowRow"),
+    ("ExperimentalLayoutApi", "androidx.compose.foundation.layout.ExperimentalLayoutApi"),
+    ("ExperimentalMaterial3Api", "androidx.compose.material3.ExperimentalMaterial3Api"),
+    ("collectAsStateWithLifecycle", "androidx.lifecycle.compose.collectAsStateWithLifecycle"),
+]
+for dirpath, _, files in os.walk(SRC):
+    for fn in files:
+        if not fn.endswith(".kt"):
+            continue
+        src = read(os.path.join(dirpath, fn))
+        for symbol, imp in need_import:
+            # 只在符号真的被代码使用时才要求 import（排除注释里的提及）
+            code = re.sub(r"//[^\n]*", "", src)
+            code = re.sub(r"/\*.*?\*/", "", code, flags=re.S)
+            if re.search(r"\b" + re.escape(symbol) + r"\b", code) and f"import {imp}" not in src:
+                check(False, f"{fn}: 使用 {symbol} 但缺少 import {imp}")
 
 print("\n" + "=" * 46)
 print("自检通过，可以推送到 GitHub 编译" if ok else "自检发现失败项，需先修复")

@@ -1,6 +1,8 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    // Kotlin 2.0 起 Compose 编译器由这个插件提供，必须应用
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 android {
