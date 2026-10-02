@@ -76,11 +76,14 @@ data class Pattern(
                     DEFAULT_DURATION_MS
                 }
 
-                if (strength !in Protocol.STRENGTH_MIN_PROTO..Protocol.STRENGTH_MAX_PROTO) {
+                // 实测有效力度为 0-100；但波形脚本允许写到 255，
+                // 以便做超出实测范围的试探（固件为单字节，不会溢出）。
+                if (strength !in 0..Protocol.STRENGTH_PROTO_MAX) {
                     return Result.failure(
                         IllegalArgumentException(
                             "第 $lineNo 行：力度 $strength 超出 " +
-                                "${Protocol.STRENGTH_MIN_PROTO}..${Protocol.STRENGTH_MAX_PROTO}"
+                                "0..${Protocol.STRENGTH_PROTO_MAX}" +
+                                "（实测有效范围 ${Protocol.STRENGTH_MIN}..${Protocol.STRENGTH_MAX}）"
                         )
                     )
                 }

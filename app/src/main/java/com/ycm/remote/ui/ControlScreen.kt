@@ -7,8 +7,8 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -31,6 +31,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -46,8 +48,8 @@ import com.ycm.remote.ble.BleManager
 import com.ycm.remote.ble.PatternPlayer
 import com.ycm.remote.protocol.Protocol
 import kotlinx.coroutines.launch
-import kotlin.math.max
-import kotlin.math.min
+import kotlin.math.abs
+import kotlin.math.sqrt
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -62,12 +64,11 @@ fun ControlScreen(
 
     val ready = state == BleManager.State.READY
 
-    var strength by remember { mutableStateOf(60f) }
-    var experimentalRange by remember { mutableStateOf(false) }
+    var strength by remember { mutableIntStateOf(60) }
     var currentMode by remember { mutableStateOf<Int?>(null) }
     var shakeEnabled by remember { mutableStateOf(false) }
-
-    // 记录最近一次发送的帧，方便对照
+    var sensitivity by remember { mutableFloatStateOf(3.0f) }
+    var shakeLiveValue by remember { mutableIntStateOf(0) }
     var lastFrame by remember { mutableStateOf<String?>(null) }
 
     fun send(frame: ByteArray, note: String) {
@@ -76,39 +77,87 @@ fun ControlScreen(
         scope.launch { ble.writeWithRetry(frame) }
     }
 
-    // 手机摇晃 → 力度（官方"摇晃控制"的增强版：阈值和范围都可调）
+    // ---------------------------------------------------------------- 摇晃控制
+    // 思路：用「线性加速度」而不是原始读数。
+    //   原始加速度静止时恒为 ~9.8（重力），所以直接映射会一开机就是最大值。
+    //   这里先用低通滤波估出重力分量，再取 |a| - |gravity| 作为"晃动强度"。
+    //   sensitivity 越大越灵敏（需要的晃动越小就能到 100）。
     val context = LocalContext.current
-    DisposableEffect(shakeEnabled, ready) {
-        if (!shakeEnabled || !ready) return@DisposableEffect onDispose { }
+    DisposableEffect(shakeEnabled, ready, sensitivity) {
+        if (!shakeEnabled || !ready) {
+            shakeLiveValue = 0
+            return@DisposableEffect onDispose { }
+        }
 
         val sm = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
         val accel = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+
+        var gx = 0f
+        var gy = 0f
+        var gz = 9.8f          // 重力估计，初值取静止时的典型值
+        val alpha = 0.8f       // 低通系数：越大越"迟钝"，重力估计越稳
+
         var lastSentAt = 0L
         var lastSentValue = -1
+        var lastChangeAt = 0L
+
         val listener = object : SensorEventListener {
             override fun onSensorChanged(event: SensorEvent) {
-                val peak = max(event.values[0], max(event.values[1], event.values[2]))
-                // 峰值 < 1 视为静止；映射到 0..100（与原小程序一致的思路，但阈值可自行调整）
-                val value = if (peak < 1f) 0 else (peak / 4f * 60f + 40f).toInt()
-                val clamped = min(100, max(0, value))
+                val x = event.values[0]
+                val y = event.values[1]
+                val z = event.values[2]
 
-                // 节流：至少间隔 120ms，且变化达到 3 才发，避免刷爆 BLE
+                // 低通滤波估计重力
+                gx = alpha * gx + (1 - alpha) * x
+                gy = alpha * gy + (1 - alpha) * y
+                gz = alpha * gz + (1 - alpha) * z
+
+                // 去掉重力后的线性加速度大小
+                val lx = x - gx
+                val ly = y - gy
+                val lz = z - gz
+                val linear = sqrt(lx * lx + ly * ly + lz * lz)
+
+                // 死区：轻微抖动不发指令，避免刷屏
+                val dead = 0.35f
+                val effective = if (linear <= dead) 0f else linear - dead
+
+                // sensitivity 越大越灵敏
+                val gain = sensitivity.coerceIn(0.5f, 12f)
+                val value = if (effective <= 0f) {
+                    0
+                } else {
+                    ((effective / gain) * 100f).toInt().coerceIn(0, Protocol.STRENGTH_MAX)
+                }
+
+                shakeLiveValue = value
+
                 val now = System.currentTimeMillis()
-                val changed = kotlin.math.abs(clamped - lastSentValue) >= 3
-                if (changed && now - lastSentAt >= 120) {
+                if (abs(value - lastSentValue) >= 2) lastChangeAt = now
+
+                // 节流：至少 100ms 间隔，且变化 >= 2 才发
+                if (now - lastSentAt >= 100 && abs(value - lastSentValue) >= 2) {
                     lastSentAt = now
-                    lastSentValue = clamped
+                    lastSentValue = value
                     scope.launch {
-                        if (clamped <= 34) ble.write(Protocol.framePause())
-                        else ble.write(Protocol.frameStrength(clamped))
+                        // 值为 0 时直接发暂停帧，语义更明确
+                        if (value == 0) ble.write(Protocol.framePause())
+                        else ble.write(Protocol.frameStrength(value))
                     }
+                }
+
+                // 静止超过 500ms 自动归零，避免残留一个较高力度
+                if (value == 0 && lastSentValue != 0 && now - lastChangeAt >= 500) {
+                    lastSentAt = now
+                    lastSentValue = 0
+                    scope.launch { ble.write(Protocol.framePause()) }
                 }
             }
 
             override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
         }
-        sm.registerListener(listener, accel, SensorManager.SENSOR_DELAY_GAME)
 
+        sm.registerListener(listener, accel, SensorManager.SENSOR_DELAY_GAME)
         onDispose { sm.unregisterListener(listener) }
     }
 
@@ -133,7 +182,7 @@ fun ControlScreen(
             }
         }
 
-        // ---------------------------------------------------------- 急停
+        // ---------------------------------------------------------------- 急停
         Button(
             onClick = { player.emergencyStop(); lastFrame = "AA 01 00 AB   # 急停" },
             modifier = Modifier
@@ -147,7 +196,7 @@ fun ControlScreen(
             Text("急停（暂停）", style = MaterialTheme.typography.titleMedium)
         }
 
-        // ---------------------------------------------------------- 启停
+        // ---------------------------------------------------------------- 启停
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             OutlinedButton(
                 onClick = { send(Protocol.frameStart(), "开始") },
@@ -159,7 +208,7 @@ fun ControlScreen(
             ) { Text("暂停") }
         }
 
-        // ---------------------------------------------------------- 模式
+        // ---------------------------------------------------------------- 模式
         Text("模式", style = MaterialTheme.typography.titleSmall)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Protocol.MODES.forEach { mode ->
@@ -174,72 +223,68 @@ fun ControlScreen(
             }
         }
 
-        // ---------------------------------------------------------- 力度
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("力度", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-            Text("实验范围 0-255", style = MaterialTheme.typography.bodySmall)
-            Spacer(Modifier.width(8.dp))
-            Switch(checked = experimentalRange, onCheckedChange = { experimentalRange = it })
-        }
-
-        val minV = if (experimentalRange) 0f else Protocol.STRENGTH_MIN_UI.toFloat()
-        val maxV = if (experimentalRange) 255f else Protocol.STRENGTH_MAX_UI.toFloat()
-        if (strength < minV || strength > maxV) {
-            strength = strength.coerceIn(minV, maxV)
-        }
-
-        val stepsCount =
-            if (experimentalRange) 254 else Protocol.STRENGTH_MAX_UI - Protocol.STRENGTH_MIN_UI - 1
-
+        // ---------------------------------------------------------------- 力度
+        Text("力度（0-100）", style = MaterialTheme.typography.titleSmall)
         Slider(
-            value = strength,
-            onValueChange = { strength = it },
-            valueRange = minV..maxV,
-            steps = stepsCount,
+            value = strength.toFloat(),
+            onValueChange = { strength = it.toInt() },
+            valueRange = Protocol.STRENGTH_MIN.toFloat()..Protocol.STRENGTH_MAX.toFloat(),
+            steps = Protocol.STRENGTH_MAX - Protocol.STRENGTH_MIN - 1,
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = "当前 ${strength.toInt()}",
+                text = "当前 $strength",
                 modifier = Modifier.weight(1f),
                 fontFamily = FontFamily.Monospace,
             )
-            Button(onClick = { send(Protocol.frameStrength(strength.toInt()), "力度 ${strength.toInt()}") }) {
+            OutlinedButton(onClick = { strength = 0 }) { Text("归零") }
+            Spacer(Modifier.width(8.dp))
+            Button(onClick = { send(Protocol.frameStrength(strength), "力度 $strength") }) {
                 Text("发送力度")
             }
         }
-        if (!experimentalRange) {
-            Text(
-                "官方小程序只用 35~100。低于 35 的行为未验证，" +
-                    "打开「实验范围」可自己试探（可能等同于停止，也可能有额外档位）。",
-                style = MaterialTheme.typography.bodySmall,
-            )
-        } else {
-            Text(
-                "注意：0~34 与 101~255 的行为未经真机验证，请谨慎试探。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-            )
-        }
 
-        // ---------------------------------------------------------- 摇晃
+        // ---------------------------------------------------------------- 摇晃
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("摇晃控制", style = MaterialTheme.typography.titleSmall)
                 Text(
-                    "用手机加速度计实时映射力度（60Hz 采样，内部已节流）",
+                    "晃动手机来控制力度（已扣除重力，静止为 0）",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
             Switch(checked = shakeEnabled, onCheckedChange = { shakeEnabled = it })
         }
 
-        // ---------------------------------------------------------- 帧对照
+        if (shakeEnabled) {
+            Text("灵敏度：${"%.1f".format(sensitivity)}", style = MaterialTheme.typography.bodySmall)
+            Slider(
+                value = sensitivity,
+                onValueChange = { sensitivity = it },
+                valueRange = 0.5f..12f,
+            )
+            Text(
+                "数值越小越灵敏（0.5 最灵敏，12 需要大幅晃动）。" +
+                    "如果一震就到顶，往左调；如果晃半天没反应，往右调。",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "实时力度 $shakeLiveValue",
+                    modifier = Modifier.weight(1f),
+                    fontFamily = FontFamily.Monospace,
+                )
+                OutlinedButton(onClick = { player.emergencyStop() }) { Text("停") }
+            }
+        }
+
+        // ---------------------------------------------------------------- 帧对照
         lastFrame?.let {
             Text("最近发送", style = MaterialTheme.typography.titleSmall)
             Text(it, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
         }
 
-        // ---------------------------------------------------------- 回包
+        // ---------------------------------------------------------------- 回包
         Text("AE3C 回包（格式未解析，原样记录）", style = MaterialTheme.typography.titleSmall)
         Card {
             Column(Modifier.padding(8.dp)) {

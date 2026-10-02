@@ -31,10 +31,18 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.YcmRemote">
 
+        <!--
+            screenOrientation="portrait"：
+              BLE 连接对象持有在 Activity 内，旋转屏幕会销毁并重建 Activity，
+              导致连接断开。锁定竖屏是最简单可靠的修复。
+            configChanges：进一步避免其他配置变化引发的重建。
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
             android:theme="@style/Theme.YcmRemote">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

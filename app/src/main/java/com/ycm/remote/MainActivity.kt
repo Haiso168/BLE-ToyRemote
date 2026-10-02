@@ -15,7 +15,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -126,19 +131,19 @@ private fun AppRoot(ble: BleManager, player: PatternPlayer) {
                 NavigationBarItem(
                     selected = tab == Tab.CONNECT,
                     onClick = { tab = Tab.CONNECT },
-                    icon = { Text("①") },
+                    icon = { Icon(Icons.Filled.Bluetooth, contentDescription = Tab.CONNECT.label) },
                     label = { Text(Tab.CONNECT.label) },
                 )
                 NavigationBarItem(
                     selected = tab == Tab.CONTROL,
                     onClick = { tab = Tab.CONTROL },
-                    icon = { Text("②") },
+                    icon = { Icon(Icons.Filled.Tune, contentDescription = Tab.CONTROL.label) },
                     label = { Text(Tab.CONTROL.label) },
                 )
                 NavigationBarItem(
                     selected = tab == Tab.PATTERN,
                     onClick = { tab = Tab.PATTERN },
-                    icon = { Text("③") },
+                    icon = { Icon(Icons.Filled.GraphicEq, contentDescription = Tab.PATTERN.label) },
                     label = { Text(Tab.PATTERN.label) },
                 )
             }

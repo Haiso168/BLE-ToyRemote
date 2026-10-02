@@ -41,13 +41,17 @@ object Protocol {
         Mode("神风", 0x11),
     )
 
-    /** 小程序里滑条/摇晃使用的力度范围（实测可用的保守区间）。 */
-    const val STRENGTH_MIN_UI: Int = 35
-    const val STRENGTH_MAX_UI: Int = 100
+    /**
+     * 力度范围：**真机实测为 0-100**。
+     *
+     * 官方小程序只暴露 35-100（低于 34 它当作"停止"处理），
+     * 但实测固件本身就接受 0-100，所以本 App 直接铺满整个范围。
+     */
+    const val STRENGTH_MIN: Int = 0
+    const val STRENGTH_MAX: Int = 100
 
-    /** 协议层面 param 是单字节，所以探索上限是 0..255。 */
-    const val STRENGTH_MIN_PROTO: Int = 0
-    const val STRENGTH_MAX_PROTO: Int = 255
+    /** 协议层面 param 是单字节，理论可写到 255；超过 100 的部分固件如何处理未知。 */
+    const val STRENGTH_PROTO_MAX: Int = 255
 
     data class Mode(val name: String, val cmd: Int)
 
@@ -76,9 +80,13 @@ object Protocol {
 
     fun framePause(): ByteArray = frame(GROUP_MODE, CMD_PAUSE)
 
-    /** 力度/速度帧。value 允许 0..255（探索用），UI 上通常限制在 35..100。 */
+    /**
+     * 力度/速度帧。
+     * 实测有效范围 0-100；这里只做单字节保护，不强绑 UI 范围，
+     * 以便波形脚本和命令探测仍能写 0..255。
+     */
     fun frameStrength(value: Int): ByteArray =
-        frame(GROUP_SHAKE, CMD_SHAKE, value.coerceIn(STRENGTH_MIN_PROTO, STRENGTH_MAX_PROTO))
+        frame(GROUP_SHAKE, CMD_SHAKE, value.coerceIn(0, STRENGTH_PROTO_MAX))
 
     /** 心跳/开机帧：AA AA AA AA A8。实测可省略，保留备用。 */
     fun frameHeartbeat(): ByteArray = byteArrayOf(
