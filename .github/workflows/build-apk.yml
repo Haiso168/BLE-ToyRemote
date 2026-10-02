@@ -18,49 +18,98 @@ jobs:
         uses: actions/checkout@v4
 
       - name: 准备 JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      # ubuntu-latest 镜像已预装 Android SDK，这里只补齐本项目需要的组件。
-      # 若预装缺失，下面的 sdkmanager 会按需安装。
+      # 自动探测工程位置：仓库根就是工程根，或者工程在子目录里，两种都支持。
+      # 把结果写进 GITHUB_ENV，后续步骤用 ${{ env.PROJECT_DIR }}。
+      - name: 探测工程目录
+        run: |
+          set -e
+          if [ -f "settings.gradle.kts" ]; then
+            DIR="$PWD"
+          elif [ -f "YcmRemote/settings.gradle.kts" ]; then
+            DIR="$PWD/YcmRemote"
+          else
+            CAND=$(find . -maxdepth 3 -name settings.gradle.kts -not -path './.git/*' | head -n1)
+            if [ -z "$CAND" ]; then
+              echo "::error::找不到 settings.gradle.kts，仓库里似乎没有 Android 工程"
+              find . -maxdepth 2 -type f | head -n 30
+              exit 1
+            fi
+            DIR="$(cd "$(dirname "$CAND")" && pwd)"
+          fi
+          echo "PROJECT_DIR=$DIR" >> "$GITHUB_ENV"
+          echo "工程目录: $DIR"
+          ls -la "$DIR"
+
+      # ubuntu-latest (Ubuntu 24.04) 预装：
+      #   ANDROID_HOME=/usr/local/lib/android/sdk
+      #   platforms: android-34 (rev 3)   build-tools: 34.0.0
+      # 所以正常情况下什么都不用装。
       - name: 准备 Android SDK
         run: |
           set -e
           SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
           if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
+            echo "未发现预装 SDK，下载命令行工具"
             SDK="$HOME/android-sdk"
             mkdir -p "$SDK/cmdline-tools"
-            echo "预装 SDK 未找到，下载命令行工具到 $SDK"
             curl -fsSL -o /tmp/cmdline-tools.zip \
               https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
             unzip -q /tmp/cmdline-tools.zip -d "$SDK/cmdline-tools"
             mv "$SDK/cmdline-tools/cmdline-tools" "$SDK/cmdline-tools/latest"
-            echo "$SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           else
             echo "使用预装 SDK: $SDK"
-            # 预装镜像通常把 cmdline-tools 放在 latest 或 <version> 目录下
-            if [ -d "$SDK/cmdline-tools/latest/bin" ]; then
-              echo "$SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-            else
-              find "$SDK/cmdline-tools" -maxdepth 2 -name bin -type d | head -n1 >> "$GITHUB_PATH" || true
-            fi
           fi
+
+          # 把 sdkmanager 加进 PATH（预装和自装两种布局都兼容）
+          TOOLS_BIN=""
+          for c in "$SDK/cmdline-tools/latest/bin" "$SDK/cmdline-tools/bin" "$SDK/tools/bin"; do
+            if [ -x "$c/sdkmanager" ]; then TOOLS_BIN="$c"; break; fi
+          done
+          if [ -z "$TOOLS_BIN" ]; then
+            FOUND=$(find "$SDK" -maxdepth 3 -name sdkmanager -type f 2>/dev/null | head -n1 || true)
+            if [ -n "$FOUND" ]; then TOOLS_BIN="$(dirname "$FOUND")"; fi
+          fi
+          echo "sdkmanager 目录: ${TOOLS_BIN:-未找到}"
+
           echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
           echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          # PATH 走官方专用机制，避免与 GITHUB_ENV 的展开语义纠缠
+          if [ -n "$TOOLS_BIN" ]; then
+            echo "$TOOLS_BIN" >> "$GITHUB_PATH"
+          fi
 
-      - name: 安装缺失的 SDK 组件
+      - name: 检查 / 安装 SDK 组件
         run: |
           set -e
-          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
-          if command -v sdkmanager >/dev/null 2>&1; then
-            yes | sdkmanager --licenses >/dev/null 2>&1 || true
-            sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" >/dev/null
-            echo "SDK 组件就绪"
-            sdkmanager --list_installed | head -n 20 || true
+          echo "--- 已有的 platform 与 build-tools ---"
+          ls -1 "$ANDROID_SDK_ROOT/platforms" 2>/dev/null || echo "(无 platforms 目录)"
+          ls -1 "$ANDROID_SDK_ROOT/build-tools" 2>/dev/null || echo "(无 build-tools 目录)"
+
+          # 只有确实缺 platform 34 时才装，避免浪费时间
+          if [ ! -d "$ANDROID_SDK_ROOT/platforms/android-34" ]; then
+            echo "缺少 platforms;android-34，开始安装"
+            if command -v sdkmanager >/dev/null 2>&1; then
+              yes | sdkmanager --licenses >/dev/null 2>&1 || true
+              sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+            else
+              echo "::error::缺少 platform 34 且没有 sdkmanager"
+              exit 1
+            fi
           else
-            echo "未找到 sdkmanager，假定预装组件已满足（compileSdk 34 / build-tools 34.0.0）"
+            echo "platforms;android-34 已就绪，跳过安装"
+          fi
+
+          # build-tools 34.0.0 缺失时补装（AGP 需要一个匹配的版本）
+          if [ ! -d "$ANDROID_SDK_ROOT/build-tools/34.0.0" ]; then
+            echo "缺少 build-tools;34.0.0，尝试补装"
+            command -v sdkmanager >/dev/null 2>&1 && sdkmanager "build-tools;34.0.0" || true
+          else
+            echo "build-tools;34.0.0 已就绪"
           fi
 
       - name: 准备 Gradle
@@ -69,29 +118,29 @@ jobs:
           gradle-version: '8.7'
 
       - name: 生成 Gradle Wrapper（若缺失）
-        working-directory: YcmRemote
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           set -e
           if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
             echo "缺少 wrapper jar，用已安装的 Gradle 生成"
             gradle wrapper --gradle-version 8.7 --distribution-type bin
           fi
-          ls -la gradle/wrapper/ || true
+          ls -la gradle/wrapper/ 2>/dev/null || true
 
       - name: 编译 debug APK
-        working-directory: YcmRemote
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           set -e
-          chmod +x ./gradlew || true
+          chmod +x ./gradlew 2>/dev/null || true
           ./gradlew --no-daemon --stacktrace assembleDebug
 
       - name: 收集 APK
         run: |
           set -e
-          mkdir -p out
-          find YcmRemote -name "*.apk" -type f -print
-          find YcmRemote -name "*.apk" -type f -exec cp {} out/ \;
-          ls -la out/
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          find "$PROJECT_DIR" -name "*.apk" -type f -print
+          find "$PROJECT_DIR" -name "*.apk" -type f -exec cp {} "$GITHUB_WORKSPACE/out/" \;
+          ls -la "$GITHUB_WORKSPACE/out/"
 
       - name: 上传 APK
         uses: actions/upload-artifact@v4
