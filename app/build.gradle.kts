@@ -43,6 +43,15 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
+        // 编译器级 opt-in，避免到处写 @OptIn。
+        // 注意：函数上的 @OptIn 不会穿透到 lambda 字面值里
+        //（例如传给 SectionCard 的 content），所以这类"实验性 API"
+        // 用全局 opt-in 更省事、也不会漏。
+        freeCompilerArgs = freeCompilerArgs + listOf(
+            "-opt-in=androidx.compose.foundation.layout.ExperimentalLayoutApi",
+            "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api",
+            "-opt-in=kotlin.ExperimentalStdlibApi",
+        )
     }
 
     buildFeatures {

@@ -187,12 +187,19 @@ fun CustomScreen(
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Button(
                     onClick = {
-                        if (!ready) { onNeedConnection(); return@Button }
-                        Pattern.parse(script, patternName.ifBlank { "未命名" }, loop, repeatCount.toInt())
-                            .fold(
+                        if (!ready) {
+                            onNeedConnection()
+                        } else {
+                            Pattern.parse(
+                                script,
+                                patternName.ifBlank { "未命名" },
+                                loop,
+                                repeatCount.toInt(),
+                            ).fold(
                                 onSuccess = { p -> parseError = null; notice = null; player.play(p) },
                                 onFailure = { parseError = it.message },
                             )
+                        }
                     },
                     modifier = Modifier.weight(1f),
                     enabled = !progress.playing,
@@ -233,14 +240,17 @@ fun CustomScreen(
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Button(
                     onClick = {
-                        val p = currentPattern() ?: return@Button
-                        val finalName = if (store.exists(p.name)) store.uniqueName(p.name) else p.name
-                        if (store.save(p.copy(name = finalName))) {
-                            patternName = finalName
-                            refresh()
-                            notice = "已保存「$finalName」"
-                        } else {
-                            notice = "保存失败"
+                        val p = currentPattern()
+                        if (p != null) {
+                            val finalName =
+                                if (store.exists(p.name)) store.uniqueName(p.name) else p.name
+                            if (store.save(p.copy(name = finalName))) {
+                                patternName = finalName
+                                refresh()
+                                notice = "已保存「$finalName」"
+                            } else {
+                                notice = "保存失败"
+                            }
                         }
                     },
                     modifier = Modifier.weight(1f),
@@ -248,10 +258,14 @@ fun CustomScreen(
 
                 OutlinedButton(
                     onClick = {
-                        val p = currentPattern() ?: return@Button
-                        store.delete(p.name)
-                        refresh()
-                        notice = "已删除「${p.name}」"
+                        // 注意：Button 的 onClick 不是 inline lambda，
+                        // 不能用 return@Button 提前返回，只能用 if/else 组织。
+                        val p = currentPattern()
+                        if (p != null) {
+                            store.delete(p.name)
+                            refresh()
+                            notice = "已删除「${p.name}」"
+                        }
                     },
                     modifier = Modifier.weight(1f),
                     enabled = store.exists(patternName),
@@ -259,13 +273,15 @@ fun CustomScreen(
 
                 OutlinedButton(
                     onClick = {
-                        val p = currentPattern() ?: return@Button
-                        FileTransfer.shareText(
-                            context = context,
-                            fileName = PatternCodec.safeFileName(p.name),
-                            content = store.export(p),
-                        )
-                        notice = "已导出「${p.name}」"
+                        val p = currentPattern()
+                        if (p != null) {
+                            FileTransfer.shareText(
+                                context = context,
+                                fileName = PatternCodec.safeFileName(p.name),
+                                content = store.export(p),
+                            )
+                            notice = "已导出「${p.name}」"
+                        }
                     },
                     modifier = Modifier.weight(1f),
                 ) { Text("导出") }
@@ -444,25 +460,28 @@ private fun AlarmCard(
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(
                 onClick = {
-                    if (!ready) { onNeedConnection(); return@Button }
-                    AlarmScheduler.schedule(
-                        context = context,
-                        settings = AlarmScheduler.Settings(
-                            enabled = enabled,
-                            hour = hour,
-                            minute = minute,
-                            spec = RingtoneSpec(
-                                kind = ringtoneKind,
-                                modeCmd = modeCmd,
-                                patternName = patternName,
-                                strength = alarmStrength.toInt(),
-                            ),
-                        ),
-                    )
-                    status = if (enabled) {
-                        "已设定 %02d:%02d 的闹钟".format(hour, minute)
+                    if (!ready) {
+                        onNeedConnection()
                     } else {
-                        "闹钟未启用（已保存设置）"
+                        AlarmScheduler.schedule(
+                            context = context,
+                            settings = AlarmScheduler.Settings(
+                                enabled = enabled,
+                                hour = hour,
+                                minute = minute,
+                                spec = RingtoneSpec(
+                                    kind = ringtoneKind,
+                                    modeCmd = modeCmd,
+                                    patternName = patternName,
+                                    strength = alarmStrength.toInt(),
+                                ),
+                            ),
+                        )
+                        status = if (enabled) {
+                            "已设定 %02d:%02d 的闹钟".format(hour, minute)
+                        } else {
+                            "闹钟未启用（已保存设置）"
+                        }
                     }
                 },
             ) { Text("应用设置") }

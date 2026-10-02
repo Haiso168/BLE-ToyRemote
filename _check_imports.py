@@ -158,4 +158,34 @@ if problems == 0:
     print("import 完整性检查通过")
 else:
     print(f"发现 {problems} 处 import 缺失")
+
+# ---------------------------------------------------------------------------
+# 额外检查：Compose 的非 inline lambda 里不能用 return@Button 提前返回。
+# Button/OutlinedButton 的 onClick 是普通函数类型，return@Button 会导致
+# "'return' is prohibited here" 编译错误。这是实战踩过的坑。
+# ---------------------------------------------------------------------------
+print("\n=== 非 inline lambda 的提前返回检查 ===")
+label_problems = 0
+for path in sorted(files):
+    text = open(path, encoding="utf-8").read()
+    name = os.path.basename(path)
+    for i, line in enumerate(text.split("\n"), 1):
+        stripped = line.strip()
+        if stripped.startswith("//") or stripped.startswith("*"):
+            continue
+        for bad_label in ("return@Button", "return@OutlinedButton", "return@TextButton",
+                          "return@IconButton", "return@FloatingActionButton"):
+            if bad_label in line:
+                print(f"  {name}:{i} 使用了 {bad_label}（onClick 不是 inline lambda，"
+                      f"会编译失败；请改用 if/else）")
+                label_problems += 1
+
+if label_problems == 0:
+    print("  通过")
+else:
+    print(f"  发现 {label_problems} 处")
+
+problems += label_problems
+
+print()
 sys.exit(0 if problems == 0 else 1)

@@ -389,10 +389,13 @@ fun RhythmScreen(
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         Button(
                             onClick = {
-                                if (!ready) { onNeedConnection(); return@Button }
-                                store.load(r.pattern.name)?.let { player.play(it) }
-                                    ?: player.play(r.pattern)
-                                say("开始播放「${r.pattern.name}」")
+                                if (!ready) {
+                                    onNeedConnection()
+                                } else {
+                                    val p = store.load(r.pattern.name) ?: r.pattern
+                                    player.play(p)
+                                    say("开始播放「${p.name}」")
+                                }
                             },
                             enabled = ready && !player.isPlaying,
                             modifier = Modifier.weight(1f),

@@ -385,11 +385,16 @@ private fun RawFrameCard(
         note?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         Button(
             onClick = {
-                val frame = parsed ?: return@Button
-                if (!ready) { onNeedConnection(); return@Button }
-                scope.launch {
-                    val ok = ble.writeWithRetry(frame)
-                    note = if (ok) "已发送 ${Protocol.hex(frame)}" else "发送失败，见日志"
+                val frame = parsed
+                if (frame == null) {
+                    // 理论上按钮是 disabled 的，这里只是兜底
+                } else if (!ready) {
+                    onNeedConnection()
+                } else {
+                    scope.launch {
+                        val ok = ble.writeWithRetry(frame)
+                        note = if (ok) "已发送 ${Protocol.hex(frame)}" else "发送失败，见日志"
+                    }
                 }
             },
             enabled = parsed != null,
@@ -455,21 +460,24 @@ private fun ProbeCard(
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(
                 onClick = {
-                    if (!ready) { onNeedConnection(); return@Button }
-                    val g = group.toInt()
-                    val a = minOf(fromCmd.toInt(), toCmd.toInt())
-                    val b = maxOf(fromCmd.toInt(), toCmd.toInt())
-                    running = true
-                    status = "正在遍历 组$g / $a..$b（请观察玩具）"
-                    scope.launch {
-                        for (cmd in a..b) {
-                            status = "已发 组$g 命令字 $cmd"
-                            ble.write(Protocol.frame(g, cmd))
-                            delay(intervalMs.toLong())
+                    if (!ready) {
+                        onNeedConnection()
+                    } else {
+                        val g = group.toInt()
+                        val a = minOf(fromCmd.toInt(), toCmd.toInt())
+                        val b = maxOf(fromCmd.toInt(), toCmd.toInt())
+                        running = true
+                        status = "正在遍历 组$g / $a..$b（请观察玩具）"
+                        scope.launch {
+                            for (cmd in a..b) {
+                                status = "已发 组$g 命令字 $cmd"
+                                ble.write(Protocol.frame(g, cmd))
+                                delay(intervalMs.toLong())
+                            }
+                            ble.write(Protocol.framePause())
+                            status = "遍历结束，已发暂停"
+                            running = false
                         }
-                        ble.write(Protocol.framePause())
-                        status = "遍历结束，已发暂停"
-                        running = false
                     }
                 },
                 enabled = !running,
