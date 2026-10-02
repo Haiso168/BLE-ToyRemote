@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 只暴露 cacheDir/export 下的文件给 FileProvider，用于导出波形 -->
+<paths>
+    <cache-path
+        name="export"
+        path="export/" />
+</paths>

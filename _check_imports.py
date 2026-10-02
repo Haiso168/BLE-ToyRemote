@@ -85,6 +85,39 @@ REQUIRED = {
     "Bundle": "android.os.Bundle",
     # 显式 dp 扩展
     "dp": "androidx.compose.ui.unit.dp",
+    # ---- 律动 / 闹钟相关新增符号 ----
+    "rememberLauncherForActivityResult":
+        "androidx.activity.compose.rememberLauncherForActivityResult",
+    "ActivityResultContracts": "androidx.activity.result.contract.ActivityResultContracts",
+    "Activity": "android.app.Activity",
+    "MediaProjectionManager": "android.media.projection.MediaProjectionManager",
+    "MediaProjection": "android.media.projection.MediaProjection",
+    "AudioRecord": "android.media.AudioRecord",
+    "MediaRecorder": "android.media.MediaRecorder",
+    "Process": "android.os.Process",
+    "thread": "kotlin.concurrent.thread",
+    "LinearProgressIndicator": "androidx.compose.material3.LinearProgressIndicator",
+    "TimePickerDialog": "android.app.TimePickerDialog",
+    "AlarmManager": "android.app.AlarmManager",
+    "PendingIntent": "android.app.PendingIntent",
+    "Calendar": "java.util.Calendar",
+    "Service": "android.app.Service",
+    "IBinder": "android.os.IBinder",
+    "Notification": "android.app.Notification",
+    "NotificationChannel": "android.app.NotificationChannel",
+    "NotificationManager": "android.app.NotificationManager",
+    "NotificationCompat": "androidx.core.app.NotificationCompat",
+    "BroadcastReceiver": "android.content.BroadcastReceiver",
+    "ContextCompat": "androidx.core.content.ContextCompat",
+    "FileProvider": "androidx.core.content.FileProvider",
+    "File": "java.io.File",
+    "Uri": "android.net.Uri",
+    "CoroutineScope": "kotlinx.coroutines.CoroutineScope",
+    "Dispatchers": "kotlinx.coroutines.Dispatchers",
+    "Job": "kotlinx.coroutines.Job",
+    "SupervisorJob": "kotlinx.coroutines.SupervisorJob",
+    "cancel": "kotlinx.coroutines.cancel",
+    "isActive": "kotlinx.coroutines.isActive",
 }
 
 problems = 0
@@ -97,8 +130,11 @@ for dirpath, _, names in os.walk(SRC):
 for path in sorted(files):
     text = open(path, encoding="utf-8").read()
     # 去掉注释，避免注释里的词造成误报
+    # 注意顺序：先块注释（含 KDoc /** */），再去行注释，否则 KDoc 内容会被残留
     code = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
     code = re.sub(r"//[^\n]*", "", code)
+    # 去掉字符串字面量：日志文本里出现的 "Service" 之类不算代码引用
+    code = re.sub(r'"(?:[^"\\]|\\.)*"', '""', code)
     # 去掉包声明与 import 行本身
     body = "\n".join(
         ln for ln in code.splitlines()

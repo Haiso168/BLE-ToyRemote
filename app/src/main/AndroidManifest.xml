@@ -2,6 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- ==================== 蓝牙 ==================== -->
     <!-- Android 12 (API 31) 及以上 -->
     <uses-permission
         android:name="android.permission.BLUETOOTH_SCAN"
@@ -20,9 +21,31 @@
         android:name="android.permission.ACCESS_FINE_LOCATION"
         android:maxSdkVersion="30" />
 
+    <!-- ==================== 闹钟 ==================== -->
+    <!-- Android 12+ 精确闹钟；用户可在系统设置里撤销，代码里有降级处理 -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!-- 闹钟重新排期需要开机后恢复 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- 前台服务（响铃时保持存活） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Android 14+ 需要声明具体类型。connectedDevice 用于 BLE 常驻场景 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- Android 13+ 通知权限（前台服务通知 + 闹钟提示） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- ==================== 律动（音频采集） ==================== -->
+    <!-- 麦克风实时分析需要 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- AudioPlaybackCapture（系统内录）需要 MediaProjection 授权 -->
+    <uses-permission android:name="android.permission.MEDIA_PROJECTION" />
+
     <uses-feature
         android:name="android.hardware.bluetooth_le"
         android:required="true" />
+
+    <uses-feature
+        android:name="android.hardware.microphone"
+        android:required="false" />
 
     <application
         android:allowBackup="true"
@@ -49,6 +72,32 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- ==================== 闹钟 ==================== -->
+        <receiver
+            android:name=".alarm.AlarmReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.ycm.remote.action.ALARM" />
+                <action android:name="com.ycm.remote.action.ALARM_STOP" />
+            </intent-filter>
+        </receiver>
+
+        <service
+            android:name=".alarm.AlarmService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <!-- ==================== 波形导出用的 FileProvider ==================== -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 
 </manifest>

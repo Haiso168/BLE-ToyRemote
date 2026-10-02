@@ -219,6 +219,47 @@ app/src/main/java/com/ycm/remote/
 
 ---
 
+### v1.3.0 —— 菜单重构 + 律动 + 闹钟 + 波形管理
+
+| 需求 | 实现 |
+|---|---|
+| 统一版本号 | 版本移到 [`gradle.properties`](gradle.properties) 集中管理（`ycm.versionCode` / `ycm.versionName`），以后只改这一处；标题栏显示当前版本 |
+| 底部菜单加「律动」 | 四条：连接 / 控制 / **律动** / **自定义**（原「波形」改名并挪到第四位） |
+| 律动三条路线都做 | 见下 |
+| 「自定义」加闹钟 | 选时间 + 铃声可选「预设模式」或「自定义波形」，到点自动响；带立即试听 |
+| 波形保存/导入/导出 | 文本格式（人类可读可手改），本地存储 + 系统分享导出 + 文件选择器导入 |
+
+**律动的三条路线：**
+
+| 路线 | 实现 | 取舍 |
+|---|---|---|
+| 麦克风实时 | `MicSource` + `RhythmEngine` | 最通用，但受环境噪声影响，延迟 100-200ms |
+| 系统内录 | `PlaybackCaptureSource`（AudioPlaybackCapture） | 信号最干净，但音源 App 多半禁止被录制，且不能用蓝牙输出 |
+| 导入音频分析 | `AudioAnalyzer`（手机本地解码 + 检测节拍） | **零延迟、节拍最准**；只对导入过的音频有效 |
+
+映射算法有两种模式：**直接跟随**（反应快但偏糊）和**节拍增强**（自适应阈值 + 衰减曲线，更像跟着鼓点打，推荐）。
+
+**新增文件：**
+
+```
+audio/AudioSource.kt         音源接口 + 采集参数
+audio/LiveAudioSources.kt    MicSource / PlaybackCaptureSource
+audio/RhythmEngine.kt        实时节拍分析（两种映射模式）
+audio/AudioAnalyzer.kt       手机端离线分析：解码 → 检测节拍 → 生成波形
+data/PatternStore.kt         波形保存/导入/导出
+data/PatternCodec.kt         波形文本格式（编解码）
+data/AlarmScheduler.kt       闹钟持久化与调度
+data/RingtoneSpec.kt         铃声规格
+alarm/AlarmReceiver.kt       闹钟触发入口
+alarm/AlarmService.kt        闹钟前台服务（连接 + 播放）
+util/FileTransfer.kt         文件分享 / 选择
+ui/SectionCard.kt            统一分区卡片
+ui/CustomScreen.kt           自定义页（波形 + 保存/导入/导出 + 闹钟）
+ui/RhythmScreen.kt           律动页
+```
+
+---
+
 ## 已做的质量检查与已知限制
 
 **已检查**：
@@ -232,8 +273,11 @@ app/src/main/java/com/ycm/remote/
 
 **未验证**：
 
-- v1.1 / v1.2 的改动**尚未经过真机验证**（逻辑已核对，但手感类参数需要你实际调）
+- **v1.3.0 是改动最大的一版，尚未编译、未上机**。新增 11 个文件，涉及音频采集、MediaProjection、前台服务、AlarmManager 等之前没碰过的 API，**首次构建报错的概率较高**。
 - 摇晃的默认参数（死区 0.3、灵敏度 3.0、阈值 15）是按经验设定的起点，可能需要微调
+- 律动的映射参数（增益 6.0、噪声底 0.012、节拍灵敏度 1.6）同样是经验值，需要实际听着调
+- **闹钟有已知限制**：Android 不允许后台随意建立 BLE 连接。若到点时 App 已被系统清理，会自动尝试重连，失败则发通知提示手动打开 App。要做到"必定响铃"，需要常驻前台服务保持连接，那是更大的改动
+- 「系统内录」路线**很可能在你的音乐 App 上直接失败**（商业音乐 App 普遍禁止被录制），这是 API 本身的限制，不是实现问题
 - `AE3C` 回包格式仍未知（小程序源码也没解析它）
 
 ---

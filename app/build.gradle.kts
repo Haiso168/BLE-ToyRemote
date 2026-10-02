@@ -9,17 +9,26 @@ android {
     namespace = "com.ycm.remote"
     compileSdk = 34
 
+    // 版本号集中在根目录 gradle.properties 里维护（ycm.versionCode / ycm.versionName）
+    val appVersionCode: Int = (project.findProperty("ycm.versionCode") as String?)?.toInt() ?: 1
+    val appVersionName: String = (project.findProperty("ycm.versionName") as String?) ?: "1.0"
+
     defaultConfig {
         applicationId = "com.ycm.remote"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
     }
 
     buildTypes {
+        debug {
+            // 便于在设置页区分"哪个版本在跑"
+            buildConfigField("String", "BUILD_TYPE_LABEL", "\"debug\"")
+        }
         release {
             isMinifyEnabled = false
+            buildConfigField("String", "BUILD_TYPE_LABEL", "\"release\"")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -38,6 +47,8 @@ android {
 
     buildFeatures {
         compose = true
+        // 需要读取 BuildConfig.VERSION_NAME 显示当前版本
+        buildConfig = true
     }
 }
 

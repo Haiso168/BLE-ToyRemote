@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -43,7 +44,8 @@ import com.ycm.remote.ble.BleManager
 import com.ycm.remote.ble.PatternPlayer
 import com.ycm.remote.ui.ConnectionScreen
 import com.ycm.remote.ui.ControlScreen
-import com.ycm.remote.ui.PatternScreen
+import com.ycm.remote.ui.CustomScreen
+import com.ycm.remote.ui.RhythmScreen
 import com.ycm.remote.ui.theme.YcmRemoteTheme
 
 class MainActivity : ComponentActivity() {
@@ -70,7 +72,8 @@ class MainActivity : ComponentActivity() {
 private enum class Tab(val label: String) {
     CONNECT("连接"),
     CONTROL("控制"),
-    PATTERN("波形"),
+    RHYTHM("律动"),
+    CUSTOM("自定义"),
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -109,7 +112,17 @@ private fun AppRoot(ble: BleManager, player: PatternPlayer) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("YCM-BL001 遥控器") },
+                title = {
+                    Column {
+                        Text("YCM-BL001 遥控器")
+                        Text(
+                            text = "v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})" +
+                                " · ${BuildConfig.BUILD_TYPE_LABEL}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
                 actions = {
                     Text(
                         text = when (state) {
@@ -141,10 +154,16 @@ private fun AppRoot(ble: BleManager, player: PatternPlayer) {
                     label = { Text(Tab.CONTROL.label) },
                 )
                 NavigationBarItem(
-                    selected = tab == Tab.PATTERN,
-                    onClick = { tab = Tab.PATTERN },
-                    icon = { Icon(Icons.Filled.GraphicEq, contentDescription = Tab.PATTERN.label) },
-                    label = { Text(Tab.PATTERN.label) },
+                    selected = tab == Tab.RHYTHM,
+                    onClick = { tab = Tab.RHYTHM },
+                    icon = { Icon(Icons.Filled.MusicNote, contentDescription = Tab.RHYTHM.label) },
+                    label = { Text(Tab.RHYTHM.label) },
+                )
+                NavigationBarItem(
+                    selected = tab == Tab.CUSTOM,
+                    onClick = { tab = Tab.CUSTOM },
+                    icon = { Icon(Icons.Filled.GraphicEq, contentDescription = Tab.CUSTOM.label) },
+                    label = { Text(Tab.CUSTOM.label) },
                 )
             }
         },
@@ -189,7 +208,13 @@ private fun AppRoot(ble: BleManager, player: PatternPlayer) {
                     onNeedConnection = { tab = Tab.CONNECT; ble.setError("请先连接玩具") },
                 )
 
-                Tab.PATTERN -> PatternScreen(
+                Tab.RHYTHM -> RhythmScreen(
+                    ble = ble,
+                    player = player,
+                    onNeedConnection = { tab = Tab.CONNECT; ble.setError("请先连接玩具") },
+                )
+
+                Tab.CUSTOM -> CustomScreen(
                     ble = ble,
                     player = player,
                     onNeedConnection = { tab = Tab.CONNECT; ble.setError("请先连接玩具") },
