@@ -1,0 +1,102 @@
+name: Build APK
+
+# 触发方式：
+#   1) 手动：仓库页面 → Actions → Build APK → Run workflow
+#   2) 推送到 main / master 时自动构建
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    name: 编译 debug APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # ubuntu-latest 镜像已预装 Android SDK，这里只补齐本项目需要的组件。
+      # 若预装缺失，下面的 sdkmanager 会按需安装。
+      - name: 准备 Android SDK
+        run: |
+          set -e
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
+            SDK="$HOME/android-sdk"
+            mkdir -p "$SDK/cmdline-tools"
+            echo "预装 SDK 未找到，下载命令行工具到 $SDK"
+            curl -fsSL -o /tmp/cmdline-tools.zip \
+              https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+            unzip -q /tmp/cmdline-tools.zip -d "$SDK/cmdline-tools"
+            mv "$SDK/cmdline-tools/cmdline-tools" "$SDK/cmdline-tools/latest"
+            echo "$SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          else
+            echo "使用预装 SDK: $SDK"
+            # 预装镜像通常把 cmdline-tools 放在 latest 或 <version> 目录下
+            if [ -d "$SDK/cmdline-tools/latest/bin" ]; then
+              echo "$SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+            else
+              find "$SDK/cmdline-tools" -maxdepth 2 -name bin -type d | head -n1 >> "$GITHUB_PATH" || true
+            fi
+          fi
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+
+      - name: 安装缺失的 SDK 组件
+        run: |
+          set -e
+          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
+          if command -v sdkmanager >/dev/null 2>&1; then
+            yes | sdkmanager --licenses >/dev/null 2>&1 || true
+            sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" >/dev/null
+            echo "SDK 组件就绪"
+            sdkmanager --list_installed | head -n 20 || true
+          else
+            echo "未找到 sdkmanager，假定预装组件已满足（compileSdk 34 / build-tools 34.0.0）"
+          fi
+
+      - name: 准备 Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: 生成 Gradle Wrapper（若缺失）
+        working-directory: YcmRemote
+        run: |
+          set -e
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "缺少 wrapper jar，用已安装的 Gradle 生成"
+            gradle wrapper --gradle-version 8.7 --distribution-type bin
+          fi
+          ls -la gradle/wrapper/ || true
+
+      - name: 编译 debug APK
+        working-directory: YcmRemote
+        run: |
+          set -e
+          chmod +x ./gradlew || true
+          ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: 收集 APK
+        run: |
+          set -e
+          mkdir -p out
+          find YcmRemote -name "*.apk" -type f -print
+          find YcmRemote -name "*.apk" -type f -exec cp {} out/ \;
+          ls -la out/
+
+      - name: 上传 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: YcmRemote-debug-apk
+          path: out/*.apk
+          if-no-files-found: error
+          retention-days: 30

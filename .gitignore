@@ -1,0 +1,22 @@
+# Gradle
+.gradle/
+build/
+out/
+
+# Android
+local.properties
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+captures/
+.externalNativeBuild/
+.cxx/
+
+# 校验脚本的临时产物
+__pycache__/
