@@ -5,6 +5,38 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// ---------------------------------------------------------------------------
+// release 签名配置
+//
+// 优先级：
+//   1. 本地 keystore.properties（把自己电脑上的 keystore 路径/密码写进去，不提交）
+//   2. 环境变量（CI 用 GitHub Secrets 注入）
+//   3. 都没有 -> release 不签名（构建仍能跑，但产物无法安装）
+//
+// 关键：签名必须**固定不变**。Android 靠签名判断"是不是同一个 App"，
+// 换了签名就无法覆盖安装，只能卸载重装（数据全丢）。
+// ---------------------------------------------------------------------------
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = java.util.Properties().apply {
+    if (keystorePropsFile.exists()) {
+        keystorePropsFile.inputStream().use { load(it) }
+    }
+}
+
+fun signingValue(key: String, envName: String): String? =
+    keystoreProps.getProperty(key) ?: System.getenv(envName)
+
+val releaseStoreFile = signingValue("storeFile", "YCM_KEYSTORE_PATH")
+val releaseStorePassword = signingValue("storePassword", "YCM_KEYSTORE_PASSWORD")
+val releaseKeyAlias = signingValue("keyAlias", "YCM_KEY_ALIAS")
+val releaseKeyPassword = signingValue("keyPassword", "YCM_KEY_PASSWORD")
+
+val hasReleaseSigning = !releaseStoreFile.isNullOrBlank() &&
+    !releaseStorePassword.isNullOrBlank() &&
+    !releaseKeyAlias.isNullOrBlank() &&
+    !releaseKeyPassword.isNullOrBlank() &&
+    file(releaseStoreFile).exists()
+
 android {
     namespace = "com.ycm.remote"
     compileSdk = 34
@@ -21,18 +53,37 @@ android {
         versionName = appVersionName
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+                // 同时启用 v1/v2/v3 签名，兼容老设备
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+            }
+        }
+    }
+
     buildTypes {
         debug {
-            // 便于在设置页区分"哪个版本在跑"
+            // 便于在标题栏区分"哪个版本在跑"
             buildConfigField("String", "BUILD_TYPE_LABEL", "\"debug\"")
         }
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             buildConfigField("String", "BUILD_TYPE_LABEL", "\"release\"")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 

@@ -1,16 +1,21 @@
 name: Build APK
 
 # 触发方式：
-#   1) 手动：仓库页面 → Actions → Build APK → Run workflow
-#   2) 推送到 main / master 时自动构建
+#   1) 手动：Actions → Build APK → Run workflow
+#   2) 推送到 main / master
+#   3) 推送形如 v1.3.0 的 tag —— 会自动创建 Release 并附上 APK
 on:
   workflow_dispatch:
   push:
     branches: [ main, master ]
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
 
 jobs:
   build:
-    name: 编译 debug APK
+    name: 编译 APK
     runs-on: ubuntu-latest
 
     steps:
@@ -23,8 +28,7 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # 自动探测工程位置：仓库根就是工程根，或者工程在子目录里，两种都支持。
-      # 把结果写进 GITHUB_ENV，后续步骤用 ${{ env.PROJECT_DIR }}。
+      # 自动探测工程位置：仓库根就是工程根，或者工程在子目录里，两种都支持
       - name: 探测工程目录
         run: |
           set -e
@@ -35,20 +39,16 @@ jobs:
           else
             CAND=$(find . -maxdepth 3 -name settings.gradle.kts -not -path './.git/*' | head -n1)
             if [ -z "$CAND" ]; then
-              echo "::error::找不到 settings.gradle.kts，仓库里似乎没有 Android 工程"
-              find . -maxdepth 2 -type f | head -n 30
+              echo "::error::找不到 settings.gradle.kts"
               exit 1
             fi
             DIR="$(cd "$(dirname "$CAND")" && pwd)"
           fi
           echo "PROJECT_DIR=$DIR" >> "$GITHUB_ENV"
           echo "工程目录: $DIR"
-          ls -la "$DIR"
 
-      # ubuntu-latest (Ubuntu 24.04) 预装：
-      #   ANDROID_HOME=/usr/local/lib/android/sdk
-      #   platforms: android-34 (rev 3)   build-tools: 34.0.0
-      # 所以正常情况下什么都不用装。
+      # ubuntu-latest (Ubuntu 24.04) 预装 ANDROID_HOME=/usr/local/lib/android/sdk
+      # 含 platforms;android-34 与 build-tools;34.0.0，正常无需安装
       - name: 准备 Android SDK
         run: |
           set -e
@@ -65,7 +65,6 @@ jobs:
             echo "使用预装 SDK: $SDK"
           fi
 
-          # 把 sdkmanager 加进 PATH（预装和自装两种布局都兼容）
           TOOLS_BIN=""
           for c in "$SDK/cmdline-tools/latest/bin" "$SDK/cmdline-tools/bin" "$SDK/tools/bin"; do
             if [ -x "$c/sdkmanager" ]; then TOOLS_BIN="$c"; break; fi
@@ -78,7 +77,6 @@ jobs:
 
           echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
           echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
-          # PATH 走官方专用机制，避免与 GITHUB_ENV 的展开语义纠缠
           if [ -n "$TOOLS_BIN" ]; then
             echo "$TOOLS_BIN" >> "$GITHUB_PATH"
           fi
@@ -87,10 +85,9 @@ jobs:
         run: |
           set -e
           echo "--- 已有的 platform 与 build-tools ---"
-          ls -1 "$ANDROID_SDK_ROOT/platforms" 2>/dev/null || echo "(无 platforms 目录)"
-          ls -1 "$ANDROID_SDK_ROOT/build-tools" 2>/dev/null || echo "(无 build-tools 目录)"
+          ls -1 "$ANDROID_SDK_ROOT/platforms" 2>/dev/null || echo "(无 platforms)"
+          ls -1 "$ANDROID_SDK_ROOT/build-tools" 2>/dev/null || echo "(无 build-tools)"
 
-          # 只有确实缺 platform 34 时才装，避免浪费时间
           if [ ! -d "$ANDROID_SDK_ROOT/platforms/android-34" ]; then
             echo "缺少 platforms;android-34，开始安装"
             if command -v sdkmanager >/dev/null 2>&1; then
@@ -101,15 +98,7 @@ jobs:
               exit 1
             fi
           else
-            echo "platforms;android-34 已就绪，跳过安装"
-          fi
-
-          # build-tools 34.0.0 缺失时补装（AGP 需要一个匹配的版本）
-          if [ ! -d "$ANDROID_SDK_ROOT/build-tools/34.0.0" ]; then
-            echo "缺少 build-tools;34.0.0，尝试补装"
-            command -v sdkmanager >/dev/null 2>&1 && sdkmanager "build-tools;34.0.0" || true
-          else
-            echo "build-tools;34.0.0 已就绪"
+            echo "platforms;android-34 已就绪"
           fi
 
       - name: 准备 Gradle
@@ -122,10 +111,31 @@ jobs:
         run: |
           set -e
           if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
-            echo "缺少 wrapper jar，用已安装的 Gradle 生成"
             gradle wrapper --gradle-version 8.7 --distribution-type bin
           fi
-          ls -la gradle/wrapper/ 2>/dev/null || true
+
+      # 把 GitHub Secret 里的 keystore 还原成文件供 release 签名。
+      # 未配置 Secret 时跳过，只出 debug 包（不会让整个构建失败）。
+      - name: 还原签名密钥（可选）
+        id: signing
+        run: |
+          set -e
+          if [ -z "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "未配置 KEYSTORE_BASE64，本次只构建 debug 包"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/release.jks"
+          if [ ! -s "$RUNNER_TEMP/release.jks" ]; then
+            echo "::error::KEYSTORE_BASE64 解码失败或为空"
+            exit 1
+          fi
+          echo "YCM_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          echo "YCM_KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}" >> "$GITHUB_ENV"
+          echo "YCM_KEY_ALIAS=${{ secrets.KEY_ALIAS }}" >> "$GITHUB_ENV"
+          echo "YCM_KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> "$GITHUB_ENV"
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          echo "签名密钥已就绪"
 
       - name: 编译 debug APK
         working-directory: ${{ env.PROJECT_DIR }}
@@ -134,18 +144,48 @@ jobs:
           chmod +x ./gradlew 2>/dev/null || true
           ./gradlew --no-daemon --stacktrace assembleDebug
 
-      - name: 收集 APK
+      - name: 编译 release APK
+        if: steps.signing.outputs.enabled == 'true'
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -e
+          ./gradlew --no-daemon --stacktrace assembleRelease
+
+      - name: 收集产物与校验和
         run: |
           set -e
           mkdir -p "$GITHUB_WORKSPACE/out"
           find "$PROJECT_DIR" -name "*.apk" -type f -print
           find "$PROJECT_DIR" -name "*.apk" -type f -exec cp {} "$GITHUB_WORKSPACE/out/" \;
-          ls -la "$GITHUB_WORKSPACE/out/"
 
-      - name: 上传 APK
+          cd "$GITHUB_WORKSPACE/out"
+          ls -la
+          rm -f SHA256SUMS.txt
+          for f in *.apk; do
+            [ -e "$f" ] || continue
+            sha256sum "$f" >> SHA256SUMS.txt
+          done
+          echo "--- SHA256SUMS.txt ---"
+          cat SHA256SUMS.txt 2>/dev/null || echo "(无 APK)"
+
+      - name: 上传 APK（Artifact）
         uses: actions/upload-artifact@v4
         with:
-          name: YcmRemote-debug-apk
-          path: out/*.apk
+          name: YcmRemote-apk
+          path: |
+            out/*.apk
+            out/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30
+
+      # 只有推送 v* tag 时才创建 Release
+      - name: 创建 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            out/*.apk
+            out/SHA256SUMS.txt
+          generate_release_notes: true
+          draft: false
+          fail_on_unmatched_files: false
