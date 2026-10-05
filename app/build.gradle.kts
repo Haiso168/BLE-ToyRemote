@@ -1,3 +1,7 @@
+// Gradle 的 Kotlin DSL 脚本默认只导入 java.lang 和少量 Gradle API，
+// 所以用到 JDK 里的类必须显式 import，否则会报 "Unresolved reference: util"。
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -17,9 +21,10 @@ plugins {
 // 换了签名就无法覆盖安装，只能卸载重装（数据全丢）。
 // ---------------------------------------------------------------------------
 val keystorePropsFile = rootProject.file("keystore.properties")
-val keystoreProps = java.util.Properties().apply {
+val keystoreProps = Properties().apply {
     if (keystorePropsFile.exists()) {
-        keystorePropsFile.inputStream().use { load(it) }
+        // 用 use{} 保证流被关闭；Properties.load 需要显式接收方，否则会被当成局部函数
+        keystorePropsFile.inputStream().use { stream -> load(stream) }
     }
 }
 
