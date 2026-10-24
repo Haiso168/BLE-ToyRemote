@@ -114,7 +114,7 @@ private fun AppRoot(ble: BleManager, player: PatternPlayer) {
             TopAppBar(
                 title = {
                     Column {
-                        Text("YCM-BL001 遥控器")
+                        Text("玩具遥控器")
                         Text(
                             text = "v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})" +
                                 " · ${BuildConfig.BUILD_TYPE_LABEL}",

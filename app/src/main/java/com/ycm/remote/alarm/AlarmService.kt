@@ -100,7 +100,7 @@ class AlarmService : Service() {
                 null
             }
             if (device == null) {
-                notifyProblem("没有找到已配对的 YCM-BL001，无法响铃")
+                notifyProblem("没有找到玩具设备，无法响铃。请打开 App 确认玩具已开机。")
                 stopSelf()
                 return
             }
@@ -114,13 +114,25 @@ class AlarmService : Service() {
             }
         }
 
+        // 档案由 BleManager 在服务发现后自动判定
+        val profile = bleManager.activeProfile.value
+
         // 2) 播放铃声
         val ringStart = System.currentTimeMillis()
         when (spec.kind) {
             RingtoneKind.MODE -> {
-                bleManager.write(Protocol.frameMode(spec.modeCmd))
+                val modeCmd = profile?.modeCommands()?.getOrNull(spec.modeCmd)
+                if (modeCmd != null) {
+                    bleManager.write(modeCmd.bytes)
+                } else {
+                    bleManager.write(Protocol.frameMode(spec.modeCmd))
+                }
                 delay(120)
-                bleManager.write(Protocol.frameStrength(spec.strength))
+                if (profile != null) {
+                    bleManager.write(profile.strengthCommand(spec.strength))
+                } else {
+                    bleManager.write(Protocol.frameStrength(spec.strength))
+                }
 
                 // 模式会一直持续，所以响一段时间后自动停
                 while (System.currentTimeMillis() - ringStart < MAX_RING_MS) {
@@ -164,20 +176,18 @@ class AlarmService : Service() {
     }
 
     private suspend fun findPairedDevice(): String? {
-        // 复用 BleManager 的扫描能力，找一个已配对/在广播里的 YCM-BL001
+        // 复用 BleManager 的扫描能力，找任意一个已知玩具（YCM-BL001 / DSJM / QUXIN / ZAOQUYUN）
         val manager = BleManager(applicationContext)
         manager.startScan()
-        repeat(40) {   // 最多等 8 秒
-            val found = manager.found.value.firstOrNull {
-                it.name == BleManager.DEVICE_NAME
+        try {
+            repeat(40) {   // 最多等 8 秒
+                val found = manager.found.value.firstOrNull { it.isKnown }
+                if (found != null) return found.address
+                delay(200)
             }
-            if (found != null) {
-                manager.stopScan()
-                return found.address
-            }
-            delay(200)
+        } finally {
+            manager.stopScan()
         }
-        manager.stopScan()
         return null
     }
 

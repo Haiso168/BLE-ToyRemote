@@ -17,6 +17,8 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.content.ContextCompat
+import com.ycm.remote.device.DeviceProfile
+import com.ycm.remote.device.DeviceRegistry
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -43,6 +45,7 @@ import java.util.UUID
 class BleManager(private val context: Context) {
 
     companion object {
+        /** 旧玩具的 Service UUID，保留常量供兼容引用 */
         val SERVICE_UUID: UUID = UUID.fromString("0000AE3A-0000-1000-8000-00805F9B34FB")
         val WRITE_UUID: UUID = UUID.fromString("0000AE3B-0000-1000-8000-00805F9B34FB")
         val NOTIFY_UUID: UUID = UUID.fromString("0000AE3C-0000-1000-8000-00805F9B34FB")
@@ -56,7 +59,18 @@ class BleManager(private val context: Context) {
 
     enum class State { IDLE, SCANNING, CONNECTING, READY, DISCONNECTED, ERROR }
 
-    data class FoundDevice(val address: String, val name: String?, val rssi: Int)
+    /**
+     * 扫描到的设备。profile 可能为 null——表示名字/服务都没匹配上已知档案，
+     * 但仍允许用户手动连接尝试（例如新批次改了名字）。
+     */
+    data class FoundDevice(
+        val address: String,
+        val name: String?,
+        val rssi: Int,
+        val profile: DeviceProfile? = null,
+    ) {
+        val isKnown: Boolean get() = profile != null
+    }
 
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -75,11 +89,18 @@ class BleManager(private val context: Context) {
     val found: StateFlow<List<FoundDevice>> = _found.asStateFlow()
 
     private val _notifications = MutableStateFlow<List<String>>(emptyList())
-    /** AE3C 收到的回包（格式尚未解析，先原样记录） */
+    /** 通知特征收到的回包（格式尚未解析，先原样记录） */
     val notifications: StateFlow<List<String>> = _notifications.asStateFlow()
 
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
+
+    /** 已连接设备所用的档案。null = 未连接或未识别。 */
+    private val _activeProfile = MutableStateFlow<DeviceProfile?>(null)
+    val activeProfile: StateFlow<DeviceProfile?> = _activeProfile.asStateFlow()
+
+    /** 连接时优先尝试的档案（用户在连接页手选的结果） */
+    private var preferredProfile: DeviceProfile? = null
 
     private var scanCallback: ScanCallback? = null
 
@@ -145,7 +166,7 @@ class BleManager(private val context: Context) {
         _found.value = emptyList()
         _error.value = null
         _state.value = State.SCANNING
-        addLog("开始扫描 $DEVICE_NAME ...")
+        addLog("开始扫描（已知设备：${DeviceRegistry.all.joinToString { it.displayName }}）")
 
         val scanner = bluetoothAdapter.bluetoothLeScanner
         if (scanner == null) {
@@ -162,7 +183,14 @@ class BleManager(private val context: Context) {
                     null
                 }
                 val addr = result.device.address
-                val device = FoundDevice(addr, name, result.rssi)
+
+                // 先按广播名匹配档案；匹配不上再看广播里的 Service UUID
+                val profile = DeviceRegistry.byName(name)
+                    ?: result.scanRecord?.serviceUuids?.firstNotNullOfOrNull { parcel ->
+                        DeviceRegistry.byServiceUuid(parcel.uuid)
+                    }
+
+                val device = FoundDevice(addr, name, result.rssi, profile)
 
                 val current = _found.value
                 val existing = current.indexOfFirst { it.address == addr }
@@ -172,8 +200,8 @@ class BleManager(private val context: Context) {
                     current + device
                 }
 
-                if (name == DEVICE_NAME) {
-                    addLog("找到目标: $name [$addr] rssi=${result.rssi}")
+                if (profile != null) {
+                    addLog("识别到 ${profile.displayName}: $name [$addr] rssi=${result.rssi}")
                 }
             }
 
@@ -207,7 +235,7 @@ class BleManager(private val context: Context) {
     // ------------------------------------------------------------------ 连接
 
     @SuppressLint("MissingPermission")
-    fun connect(address: String) {
+    fun connect(address: String, profile: DeviceProfile? = null) {
         if (!hasPermissions()) {
             _error.value = "缺少蓝牙权限，请先授权"
             return
@@ -220,7 +248,14 @@ class BleManager(private val context: Context) {
         disconnect(quiet = true)
         _error.value = null
         _state.value = State.CONNECTING
-        addLog("正在连接 $address ...")
+
+        // 记录用户选择的档案（可能为 null，连接后按实际服务自动判定）
+        preferredProfile = profile
+        _activeProfile.value = null
+        addLog(
+            "正在连接 $address" +
+                (profile?.let { "（预设档案：${it.displayName}）" } ?: "（自动识别设备类型）")
+        )
 
         val device: BluetoothDevice = try {
             bluetoothAdapter.getRemoteDevice(address)
@@ -251,6 +286,9 @@ class BleManager(private val context: Context) {
                     addLog("连接断开 (status=$status)")
                     _state.value = if (_error.value != null) State.ERROR else State.DISCONNECTED
                     closeQuietly(g)
+                    gatt = null
+                    writeChar = null
+                    _activeProfile.value = null
                 }
             }
         }
@@ -264,29 +302,62 @@ class BleManager(private val context: Context) {
                 return
             }
 
-            val service = g.getService(SERVICE_UUID)
-            if (service == null) {
-                addLog("没有找到 Service ${SERVICE_UUID.toString().take(8)}")
-                _error.value = "该设备没有 AE3A 服务，可能不是 YCM-BL001"
+            // 按优先级找服务：
+            //   1. 用户预设的档案
+            //   2. 设备实际暴露的服务里，能匹配上的任一已知档案
+            // 这样即使设备名被改过，只要 Service UUID 对得上就能识别。
+            val candidates = buildList {
+                preferredProfile?.let { add(it) }
+                DeviceRegistry.all.forEach { p -> if (p != preferredProfile) add(p) }
+            }
+
+            var matchedProfile: DeviceProfile? = null
+            var matchedService: android.bluetooth.BluetoothGattService? = null
+
+            for (profile in candidates) {
+                for (uuid in profile.serviceUuids) {
+                    val svc = g.getService(uuid)
+                    if (svc != null) {
+                        matchedProfile = profile
+                        matchedService = svc
+                        break
+                    }
+                }
+                if (matchedProfile != null) break
+            }
+
+            if (matchedProfile == null || matchedService == null) {
+                val found = g.services?.joinToString { it.uuid.toString().take(8) } ?: "无"
+                addLog("没有匹配到已知设备的 Service。设备提供的服务: $found")
+                _error.value = "该设备不在支持列表内（服务 UUID 不匹配）"
                 _state.value = State.ERROR
                 return
             }
 
-            val wc = service.getCharacteristic(WRITE_UUID)
+            val wc = matchedService.getCharacteristic(matchedProfile.writeUuid)
             if (wc == null) {
-                addLog("没有找到写特征 AE3B")
-                _error.value = "该设备没有写特征 AE3B"
+                addLog("${matchedProfile.displayName}: 没找到写特征 ${matchedProfile.writeUuid.toString().take(8)}")
+                _error.value = "该设备没有写特征"
                 _state.value = State.ERROR
                 return
             }
-            writeChar = wc
 
-            addLog("写特征就绪 AE3B  属性=" + describeProperties(wc.properties))
+            writeChar = wc
+            _activeProfile.value = matchedProfile
+
+            addLog(
+                "${matchedProfile.displayName} 就绪  写特征=" +
+                    matchedProfile.writeUuid.toString().take(8) +
+                    "  属性=" + describeProperties(wc.properties)
+            )
             _state.value = State.READY
 
-            // 通知是可选的：实测不订阅也能控制，订阅会让玩具震一下。
-            // 这里默认订阅，便于观察回包（格式尚未解析）。
-            enableNotifications(g, service.getCharacteristic(NOTIFY_UUID))
+            // 通知是可选的：实测旧玩具不订阅也能控制，订阅会让它震一下。
+            // 新的 LEGACY 设备没有通知特征，通知 UUID 为 null 时直接跳过。
+            val notifyUuid = matchedProfile.notifyUuid
+            if (notifyUuid != null) {
+                enableNotifications(g, matchedService.getCharacteristic(notifyUuid))
+            }
         }
 
         override fun onCharacteristicWrite(
@@ -322,7 +393,7 @@ class BleManager(private val context: Context) {
     @SuppressLint("MissingPermission")
     private fun enableNotifications(g: BluetoothGatt, char: BluetoothGattCharacteristic?) {
         if (char == null) {
-            addLog("没有 AE3C 通知特征（不影响控制）")
+            addLog("该设备没有通知特征（不影响控制）")
             return
         }
         try {
@@ -336,7 +407,7 @@ class BleManager(private val context: Context) {
                 @Suppress("DEPRECATION")
                 g.writeDescriptor(cccd)
             }
-            addLog("已订阅 AE3C 通知")
+            addLog("已订阅通知 ${char.uuid.toString().take(8)}")
         } catch (e: SecurityException) {
             addLog("订阅通知失败: ${e.message}")
         }
@@ -417,6 +488,8 @@ class BleManager(private val context: Context) {
         gatt?.let { closeQuietly(it) }
         gatt = null
         writeChar = null
+        _activeProfile.value = null
+        preferredProfile = null
         if (!quiet) _state.value = State.IDLE
     }
 

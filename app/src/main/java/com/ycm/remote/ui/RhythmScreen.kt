@@ -104,12 +104,17 @@ fun RhythmScreen(
         isError = error
     }
 
-    // 把引擎输出接给 BLE
+    // 把引擎输出接给 BLE（按当前设备档案构造指令）
+    // 引擎内部统一按 0-100 工作，发送前归一化到目标设备的量程
+    // （旧玩具 0-100，LEGACY 设备 0-10）
     DisposableEffect(ble) {
         engine.onStrength = { value ->
+            val profile = ble.activeProfile.value ?: YcmBl001Profile
+            val span = (profile.strengthMax - profile.strengthMin).coerceAtLeast(1)
+            val scaled = profile.strengthMin + (value.coerceIn(0, 100) * span / 100)
             scope.launch {
-                if (value <= 0) ble.write(Protocol.framePause())
-                else ble.write(Protocol.frameStrength(value))
+                if (value <= 0) ble.write(profile.stopCommand())
+                else ble.write(profile.strengthCommand(scaled))
             }
         }
         onDispose {

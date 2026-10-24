@@ -49,6 +49,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ycm.remote.ble.BleManager
 import com.ycm.remote.ble.PatternPlayer
+import com.ycm.remote.device.DeviceProfile
+import com.ycm.remote.device.YcmBl001Profile
 import com.ycm.remote.protocol.Protocol
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -64,15 +66,26 @@ fun ControlScreen(
 ) {
     val state by ble.state.collectAsStateWithLifecycle()
     val notifications by ble.notifications.collectAsStateWithLifecycle()
+    val activeProfile by ble.activeProfile.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
 
     val ready = state == BleManager.State.READY
 
-    var strength by remember { mutableIntStateOf(60) }
+    // 未连接时用旧玩具的档案做"默认展示"，连上后自动换成实际设备
+    val profile = activeProfile ?: YcmBl001Profile
+    val modeCommands = profile.modeCommands()
+    val strengthMin = profile.strengthMin
+    val strengthMax = profile.strengthMax
+
+    var strength by remember(profile) {
+        mutableIntStateOf(
+            if (profile.strengthMax <= 10) 5 else (profile.strengthMin + profile.strengthMax) / 2
+        )
+    }
     var currentMode by remember { mutableStateOf<Int?>(null) }
     var shakeEnabled by remember { mutableStateOf(false) }
     var sensitivity by remember { mutableFloatStateOf(3.0f) }
-    var shakeThreshold by remember { mutableIntStateOf(15) }
+    var shakeThreshold by remember(profile) { mutableIntStateOf(if (strengthMax <= 10) 2 else 15) }
     var shakeLiveValue by remember { mutableIntStateOf(0) }
     var lastFrame by remember { mutableStateOf<String?>(null) }
 
@@ -129,7 +142,10 @@ fun ControlScreen(
                 val computed = if (effective <= 0f) {
                     0
                 } else {
-                    ((effective / gain) * 100f).toInt().coerceIn(0, Protocol.STRENGTH_MAX)
+                    // 归一化到 0..1 后乘该设备的最大力度，兼容 0-10 和 0-100 两种量程
+                    ((effective / gain) * 100f).toInt().coerceIn(0, 100)
+                        .let { pct -> (pct / 100f * strengthMax).toInt() }
+                        .coerceIn(strengthMin, strengthMax)
                 }
 
                 shakeLiveValue = computed
@@ -147,11 +163,11 @@ fun ControlScreen(
                 if (target == 0) {
                     if (!deviceStopped) {
                         deviceStopped = true
-                        scope.launch { ble.write(Protocol.framePause()) }
+                        scope.launch { ble.write(profile.stopCommand()) }
                     }
                 } else {
                     deviceStopped = false
-                    scope.launch { ble.write(Protocol.frameStrength(target)) }
+                    scope.launch { ble.write(profile.strengthCommand(target)) }
                 }
             }
 
@@ -177,7 +193,7 @@ fun ControlScreen(
         if (!ready) {
             SectionCard(
                 title = "尚未连接",
-                subtitle = "请先到「连接」页连上 YCM-BL001",
+                subtitle = "请先到「连接」页连上玩具",
                 icon = Icons.Filled.Info,
                 accent = MaterialTheme.colorScheme.error,
             ) {
@@ -209,15 +225,24 @@ fun ControlScreen(
         // ---------------------------------------------------------------- 启停
         SectionCard(
             title = "启停",
+            subtitle = "启动 = 当前模式 + 当前力度",
             icon = Icons.Filled.PlayCircle,
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedButton(
-                    onClick = { send(Protocol.frameStart(), "开始") },
+                    onClick = {
+                        // 「开始」的语义：把当前模式（没选就第一个）与当前力度一起下发
+                        val mode = modeCommands.getOrNull(currentMode ?: 0)
+                        if (mode != null) {
+                            send(mode.bytes, "启动 ${mode.name} @ $strength")
+                            currentMode = currentMode ?: 0
+                        }
+                        send(profile.strengthCommand(strength), "力度 $strength")
+                    },
                     modifier = Modifier.weight(1f),
                 ) { Text("开始") }
                 OutlinedButton(
-                    onClick = { send(Protocol.framePause(), "暂停") },
+                    onClick = { send(profile.stopCommand(), "暂停") },
                     modifier = Modifier.weight(1f),
                 ) { Text("暂停") }
             }
@@ -226,21 +251,21 @@ fun ControlScreen(
         // ---------------------------------------------------------------- 模式
         SectionCard(
             title = "模式",
-            subtitle = "点一下立即切换",
+            subtitle = if (modeCommands.isEmpty()) "该设备不支持模式切换" else "点一下立即切换",
             icon = Icons.Filled.Vibration,
         ) {
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Protocol.MODES.forEach { mode ->
+                modeCommands.forEachIndexed { index, mode ->
                     FilterChip(
-                        selected = currentMode == mode.cmd,
+                        selected = currentMode == index,
                         onClick = {
-                            currentMode = mode.cmd
-                            send(Protocol.frameMode(mode.cmd), "模式 ${mode.name}")
+                            currentMode = index
+                            send(mode.bytes, "模式 ${mode.name}")
                         },
-                        label = { Text(mode.name) },
+                        label = { Text("${index + 1}. ${mode.name}") },
                     )
                 }
             }
@@ -249,14 +274,14 @@ fun ControlScreen(
         // ---------------------------------------------------------------- 力度
         SectionCard(
             title = "力度",
-            subtitle = "范围 ${Protocol.STRENGTH_MIN}-${Protocol.STRENGTH_MAX}",
+            subtitle = "范围 $strengthMin-$strengthMax",
             icon = Icons.Filled.Speed,
         ) {
             Slider(
                 value = strength.toFloat(),
                 onValueChange = { strength = it.toInt() },
-                valueRange = Protocol.STRENGTH_MIN.toFloat()..Protocol.STRENGTH_MAX.toFloat(),
-                steps = Protocol.STRENGTH_MAX - Protocol.STRENGTH_MIN - 1,
+                valueRange = strengthMin.toFloat()..strengthMax.toFloat(),
+                steps = (strengthMax - strengthMin - 1).coerceAtLeast(0),
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 LabeledValue(
@@ -264,9 +289,9 @@ fun ControlScreen(
                     value = strength.toString(),
                     modifier = Modifier.weight(1f),
                 )
-                OutlinedButton(onClick = { strength = 0 }) { Text("归零") }
+                OutlinedButton(onClick = { strength = strengthMin }) { Text("归零") }
                 Spacer(Modifier.width(8.dp))
-                Button(onClick = { send(Protocol.frameStrength(strength), "力度 $strength") }) {
+                Button(onClick = { send(profile.strengthCommand(strength), "力度 $strength") }) {
                     Text("发送")
                 }
             }
@@ -297,11 +322,11 @@ fun ControlScreen(
                 Slider(
                     value = shakeThreshold.toFloat(),
                     onValueChange = { shakeThreshold = it.toInt() },
-                    valueRange = 0f..Protocol.STRENGTH_MAX.toFloat(),
-                    steps = Protocol.STRENGTH_MAX - 1,
+                    valueRange = strengthMin.toFloat()..strengthMax.toFloat(),
+                    steps = (strengthMax - strengthMin - 1).coerceAtLeast(0),
                 )
                 Text(
-                    "算出的力度达到该值才会发送，低于它按停止处理。默认 15。",
+                    "算出的力度达到该值才会发送，低于它按停止处理。",
                     style = MaterialTheme.typography.bodySmall,
                 )
 
@@ -344,7 +369,12 @@ fun ControlScreen(
             }
         }
 
-        ProbeCard(ble = ble, ready = ready, onNeedConnection = onNeedConnection)
+        ProbeCard(
+            ble = ble,
+            profile = profile,
+            ready = ready,
+            onNeedConnection = onNeedConnection,
+        )
     }
 }
 
@@ -371,13 +401,13 @@ private fun RawFrameCard(
                 parsed = Protocol.parseHex(it)
                 note = null
             },
-            label = { Text("HEX，例如 AA 01 02 AD") },
+            label = { Text("HEX，例如 03 11 01") },
             singleLine = true,
             textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
             isError = parsed == null && input.isNotBlank(),
             supportingText = {
                 parsed?.let {
-                    Text("${it.size} 字节   校验和${if (Protocol.isValid(it)) "正确" else "不正确"}")
+                    Text("${it.size} 字节")
                 }
             },
             modifier = Modifier.fillMaxWidth(),
@@ -405,6 +435,7 @@ private fun RawFrameCard(
 @Composable
 private fun ProbeCard(
     ble: BleManager,
+    profile: DeviceProfile,
     ready: Boolean,
     onNeedConnection: () -> Unit,
 ) {
@@ -471,11 +502,13 @@ private fun ProbeCard(
                         scope.launch {
                             for (cmd in a..b) {
                                 status = "已发 组$g 命令字 $cmd"
+                                // 通用探测：按「AA 组 命令字 校验和」构造，实际设备可能不认，
+                                // 只用于试出隐藏功能
                                 ble.write(Protocol.frame(g, cmd))
                                 delay(intervalMs.toLong())
                             }
-                            ble.write(Protocol.framePause())
-                            status = "遍历结束，已发暂停"
+                            ble.write(profile.stopCommand())
+                            status = "遍历结束，已发停止"
                             running = false
                         }
                     }

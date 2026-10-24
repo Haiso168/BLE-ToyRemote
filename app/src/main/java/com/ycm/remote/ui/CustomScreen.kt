@@ -33,6 +33,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -50,6 +51,7 @@ import com.ycm.remote.data.AlarmScheduler
 import com.ycm.remote.data.PatternStore
 import com.ycm.remote.data.RingtoneKind
 import com.ycm.remote.data.RingtoneSpec
+import com.ycm.remote.device.YcmBl001Profile
 import com.ycm.remote.protocol.BuiltinPatterns
 import com.ycm.remote.protocol.Pattern
 import com.ycm.remote.protocol.PatternCodec
@@ -357,13 +359,20 @@ private fun AlarmCard(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
+    // 闹钟按当前设备档案的指令来响
+    val activeProfile by ble.activeProfile.collectAsStateWithLifecycle()
+    val profile = activeProfile ?: YcmBl001Profile
+    val alarmModes = profile.modeCommands()
+
     var enabled by remember { mutableStateOf(false) }
     var hour by remember { mutableStateOf(7) }
     var minute by remember { mutableStateOf(30) }
     var ringtoneKind by remember { mutableStateOf(RingtoneKind.MODE) }
-    var modeCmd by remember { mutableStateOf(Protocol.MODES.first().cmd) }
+    var modeIndex by remember { mutableIntStateOf(0) }
     var patternName by remember { mutableStateOf(store.loadAll().firstOrNull()?.name) }
-    var alarmStrength by remember { mutableFloatStateOf(80f) }
+    var alarmStrength by remember(profile) {
+        mutableFloatStateOf(profile.strengthMax.toFloat() * 0.8f)
+    }
     var status by remember { mutableStateOf<String?>(null) }
 
     SectionCard(
@@ -412,15 +421,18 @@ private fun AlarmCard(
 
         when (ringtoneKind) {
             RingtoneKind.MODE -> {
+                if (alarmModes.isEmpty()) {
+                    Text("当前设备不支持模式，请改用「自定义波形」。", style = MaterialTheme.typography.bodySmall)
+                }
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Protocol.MODES.forEach { m ->
+                    alarmModes.forEachIndexed { index, m ->
                         FilterChip(
-                            selected = modeCmd == m.cmd,
-                            onClick = { modeCmd = m.cmd },
-                            label = { Text(m.name) },
+                            selected = modeIndex == index,
+                            onClick = { modeIndex = index },
+                            label = { Text("${index + 1}. ${m.name}") },
                         )
                     }
                 }
@@ -428,8 +440,8 @@ private fun AlarmCard(
                 Slider(
                     value = alarmStrength,
                     onValueChange = { alarmStrength = it },
-                    valueRange = 0f..Protocol.STRENGTH_MAX.toFloat(),
-                    steps = Protocol.STRENGTH_MAX - 1,
+                    valueRange = profile.strengthMin.toFloat()..profile.strengthMax.toFloat(),
+                    steps = (profile.strengthMax - profile.strengthMin - 1).coerceAtLeast(0),
                 )
             }
 
@@ -471,7 +483,8 @@ private fun AlarmCard(
                                 minute = minute,
                                 spec = RingtoneSpec(
                                     kind = ringtoneKind,
-                                    modeCmd = modeCmd,
+                                    // 存的是模式序号，响铃时按当时的设备档案解析
+                                    modeCmd = modeIndex,
                                     patternName = patternName,
                                     strength = alarmStrength.toInt(),
                                 ),
@@ -493,8 +506,8 @@ private fun AlarmCard(
                         if (!ready) { onNeedConnection(); return@launch }
                         when (ringtoneKind) {
                             RingtoneKind.MODE -> {
-                                ble.write(Protocol.frameMode(modeCmd))
-                                ble.write(Protocol.frameStrength(alarmStrength.toInt()))
+                                alarmModes.getOrNull(modeIndex)?.let { ble.write(it.bytes) }
+                                ble.write(profile.strengthCommand(alarmStrength.toInt()))
                             }
                             RingtoneKind.PATTERN -> {
                                 store.load(patternName ?: "")?.let { player.play(it) }

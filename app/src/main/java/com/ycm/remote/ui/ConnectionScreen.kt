@@ -132,7 +132,7 @@ fun ConnectionScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(found, key = { it.address }) { d ->
-                    val isTarget = d.name == BleManager.DEVICE_NAME
+                    val isTarget = d.isKnown
                     Surface(
                         shape = RoundedCornerShape(10.dp),
                         color = if (isTarget)
@@ -154,7 +154,8 @@ fun ConnectionScreen(
                                     style = MaterialTheme.typography.bodyMedium,
                                 )
                                 Text(
-                                    text = d.address,
+                                    text = d.address +
+                                        (d.profile?.let { "  ·  ${it.displayName}" } ?: ""),
                                     style = MaterialTheme.typography.bodySmall,
                                     fontFamily = FontFamily.Monospace,
                                 )
@@ -164,7 +165,7 @@ fun ConnectionScreen(
                                 style = MaterialTheme.typography.bodySmall,
                             )
                             Spacer(Modifier.width(10.dp))
-                            Button(onClick = { ble.connect(d.address) }) { Text("连接") }
+                            Button(onClick = { ble.connect(d.address, d.profile) }) { Text("连接") }
                         }
                     }
                 }
