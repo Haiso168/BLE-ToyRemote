@@ -160,7 +160,81 @@ else:
     print(f"发现 {problems} 处 import 缺失")
 
 # ---------------------------------------------------------------------------
-# 额外检查：Compose 的非 inline lambda 里不能用 return@Button 提前返回。
+# 检查二：跨包引用本项目自己的类，但忘了 import。
+#
+# 这是实战踩过两次的坑（YcmBl001Profile 漏 import 导致 CI 失败）。
+# 做法：
+#   1. 扫描所有 .kt 的 package 声明与顶层类/对象定义，建立「简单名 -> 全限定名」
+#   2. 对每个文件，检查它用到的简单类名是否
+#        a) 在同包（不用 import），或
+#        b) 有对应 import，或
+#        c) 同类内定义
+#      三者都不满足就是漏 import
+# ---------------------------------------------------------------------------
+print("\n=== 跨包类名 import 检查 ===")
+
+# 收集项目内所有类定义：simpleName -> (package, file)
+project_classes = {}
+file_package = {}
+for path in sorted(files):
+    text = open(path, encoding="utf-8").read()
+    pm = re.search(r"^package\s+([\w.]+)", text, re.M)
+    pkg = pm.group(1) if pm else ""
+    file_package[path] = pkg
+    for m in re.finditer(
+        r"^(?:@\w+(?:\([^)]*\))?\s*)*(?:public\s+|internal\s+|private\s+|abstract\s+|open\s+|sealed\s+|data\s+|enum\s+|annotation\s+)*"
+        r"(?:class|object|interface)\s+(\w+)",
+        text, re.M,
+    ):
+        project_classes.setdefault(m.group(1), []).append((pkg, path))
+
+cross_problems = 0
+for path in sorted(files):
+    text = open(path, encoding="utf-8").read()
+    my_pkg = file_package[path]
+    name = os.path.basename(path)
+
+    # 去掉注释与字符串
+    code = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    code = re.sub(r"//[^\n]*", "", code)
+    code = re.sub(r'"(?:[^"\\]|\\.)*"', '""', code)
+    body = "\n".join(
+        ln for ln in code.splitlines()
+        if not ln.strip().startswith("import ") and not ln.strip().startswith("package ")
+    )
+
+    # 本文件自己定义的类名
+    own = set(m.group(1) for m in re.finditer(
+        r"(?:class|object|interface)\s+(\w+)", code))
+
+    for simple, defs in project_classes.items():
+        pkgs = {d[0] for d in defs}
+        # 同包或自身定义 -> 不需要 import
+        if my_pkg in pkgs or simple in own:
+            continue
+        # 是否真的用到了（前面不能是 . 或字母数字，排除成员访问）
+        if not re.search(r"(?<![.\w])" + re.escape(simple) + r"\b", body):
+            continue
+        # 是否有 import（可能是 import xxx.Simple，也可能是 import xxx.*）
+        has_import = any(
+            re.search(rf"^import\s+{re.escape(p)}\.{re.escape(simple)}\s*$", text, re.M)
+            for p in pkgs
+        ) or any(
+            re.search(rf"^import\s+{re.escape(p)}\.\*\s*$", text, re.M)
+            for p in pkgs
+        )
+        if not has_import:
+            print(f"  {name}: 用到 {simple}（定义在 {', '.join(sorted(pkgs))}）但缺少 import")
+            cross_problems += 1
+
+if cross_problems == 0:
+    print("  通过")
+else:
+    print(f"  发现 {cross_problems} 处")
+problems += cross_problems
+
+# ---------------------------------------------------------------------------
+# 检查三：Compose 的非 inline lambda 里不能用 return@Button 提前返回。
 # Button/OutlinedButton 的 onClick 是普通函数类型，return@Button 会导致
 # "'return' is prohibited here" 编译错误。这是实战踩过的坑。
 # ---------------------------------------------------------------------------

@@ -53,6 +53,7 @@ import com.ycm.remote.audio.RhythmEngine
 import com.ycm.remote.ble.BleManager
 import com.ycm.remote.ble.PatternPlayer
 import com.ycm.remote.data.PatternStore
+import com.ycm.remote.device.YcmBl001Profile
 import com.ycm.remote.protocol.Protocol
 import com.ycm.remote.util.FileTransfer
 import kotlinx.coroutines.Dispatchers
